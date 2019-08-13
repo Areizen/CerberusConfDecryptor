@@ -4,14 +4,22 @@ from androguard.core.bytecodes import apk, dvm
 from androguard.misc import AnalyzeAPK
 from Crypto.Cipher import ARC4
 
+
 import subprocess
+import binascii
+import requests
+import base64
+import string
 import sys
 import re
 
-def main(apk):
+apkname = ""
+def main(apk, download_module=False):
+    global apkname
+    apkname = apk
     payload = getRC4Key(apk)
     if payload:
-        get_conf(payload)
+        get_conf(payload,download_module)
 
 def getRC4Key(apk):
     a, d, dx = AnalyzeAPK(apk)
@@ -81,7 +89,7 @@ def getRC4Key(apk):
                             print(f"Saved to : {extract_name}")                         
                             return extract_name
 
-def get_conf(apk):
+def get_conf(apk, download_module):
     a, d, dx = AnalyzeAPK(apk)
 
     classes = dx.get_classes()
@@ -107,6 +115,8 @@ def get_conf(apk):
             found = True
         
         if found :
+            values = []
+            url = ""
             for method in methods:
                 methodz = method.get_method()
                 if methodz.get_descriptor() == "()V":
@@ -117,11 +127,42 @@ def get_conf(apk):
                     for cipher in ciphers:
                         pid = subprocess.Popen(["java","Decode",cipher], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                         pid.wait()
-                        stdout = pid.communicate()[0]
-                        print(stdout.decode('utf8').strip())
-                
-if __name__ == '__main__':
-    if(len(sys.argv)!=2):
-        print(f'Usage: {sys.argv[0]} <cerberus_apk>')
+                        stdout = pid.communicate()[0].decode('utf8').strip()
+                        values.append(stdout)
+                        
+                        if(stdout.startswith("http://") or stdout.startswith("https://")):
+                            url = stdout
+                            print(f"Found C2 : {url}")
+                        #print(cipher+' -> '+ stdout)
+            f = open(apkname+".conf","w")
+            f.write("\n".join(values))
+            f.close()
+
+            if download_module:
+                get_module(url,values)
+
+def decrypt(key, cipher):
+    return ARC4.new(key).decrypt(binascii.unhexlify(base64.b64decode(cipher)))
+
+def get_module(url,values):
+    global apkname
+    url = f"{url}/gate.php?action=getModule&data="
+    print(f"Downloading module at : {url}")
+    cipher = requests.get(url).text
+    if(cipher == ""):
+        print("Server returned empty module")
         sys.exit(-1)
-    main(sys.argv[1])
+    
+    for i in values:
+        clear = decrypt(i,cipher)
+        if all(c in string.printable for c in clear) and clear != "":
+            f = open(apkname+".module.apk","wb")
+            f.write(base64.b64decode(clear))
+            f.close()
+            sys.exit(-1)
+
+if __name__ == '__main__':
+    if(len(sys.argv)!=3):
+        print(f'Usage: {sys.argv[0]} <cerberus_apk> <get_remote_module:yes|no>')
+        sys.exit(-1)
+    main(sys.argv[1], sys.argv[2] == 'yes')
